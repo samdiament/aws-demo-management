@@ -1,0 +1,81 @@
+---
+- name: Start or Stop AWS Demo VMs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aws_region: "us-east-2"          # Override with -e aws_region=<region> if needed
+    vm_state: "stopped"              # Valid values: stopped, running
+    name_filter: "*samboxaws.org*"   # Matches aap, rhel9-node01, and rhel10-node01
+
+  vars_files:
+    - aws_demo_creds.yml
+
+  environment: >-
+    {{
+      {
+        'AWS_ACCESS_KEY_ID': aws_access_key,
+        'AWS_SECRET_ACCESS_KEY': aws_secret_key
+      }
+      | combine(
+          {'AWS_SESSION_TOKEN': aws_session_token}
+          if (aws_session_token is defined and aws_session_token | length > 0)
+          else {}
+        )
+    }}
+
+  tasks:
+    - name: Validate requested VM state
+      ansible.builtin.assert:
+        that:
+          - vm_state in ['stopped', 'running']
+        fail_msg: "vm_state must be either 'stopped' or 'running'."
+
+    - name: Find matching AWS EC2 instances
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Name": "{{ name_filter }}"
+          instance-state-name:
+            - pending
+            - running
+            - stopping
+            - stopped
+      register: matched_vms
+
+    - name: Ensure matching instances were found
+      ansible.builtin.assert:
+        that:
+          - matched_vms.instances | length > 0
+        fail_msg: >-
+          No EC2 instances found in {{ aws_region }} matching tag:Name='{{ name_filter }}'.
+          Verify your aws_region, name_filter, and AWS credentials.
+
+    - name: Display targeted EC2 instances
+      ansible.builtin.debug:
+        msg: >-
+          Setting {{ item.tags.Name | default(item.instance_id) }} ({{ item.instance_id }})
+          from '{{ item.state.name }}' to '{{ vm_state }}'
+      loop: "{{ matched_vms.instances }}"
+      loop_control:
+        label: "{{ item.tags.Name | default(item.instance_id) }}"
+
+    - name: Transition EC2 instances to '{{ vm_state }}'
+      amazon.aws.ec2_instance:
+        region: "{{ aws_region }}"
+        instance_ids: "{{ matched_vms.instances | map(attribute='instance_id') | list }}"
+        state: "{{ vm_state }}"
+        wait: true
+      register: ec2_result
+
+    - name: Show updated instance states and IPs
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.tags.Name | default(item.instance_id) }} |
+          State: {{ item.state.name }} |
+          Private IP: {{ item.private_ip_address | default('N/A') }} |
+          Public IP: {{ item.public_ip_address | default('None') }}
+      loop: "{{ ec2_result.instances | default([]) }}"
+      loop_control:
+        label: "{{ item.tags.Name | default(item.instance_id) }}"
