@@ -1,0 +1,10 @@
+#SPDX-License-Identifier: MIT-0
+---
+# defaults file for aap_server_setup
+aap_fqdn: "aap.samboxaws.org"
+aap_swap_size_mb: 4096
+aap_admin_password: ""
+aap_pg_password: ""
+aap_bundle_path: ""
+aap_extract_dir: "/tmp/aap-setup-bundle"
+aap_enable_eda: true

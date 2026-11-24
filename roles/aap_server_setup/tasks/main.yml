@@ -1,0 +1,70 @@
+#SPDX-License-Identifier: MIT-0
+# tasks file for aap_server_setup
+---
+- name: Validate AAP server setup variables
+  ansible.builtin.assert:
+    that:
+      - aap_admin_password | length > 0
+      - aap_pg_password | length > 0
+      - aap_bundle_path | length > 0
+    fail_msg: "Provide aap_admin_password, aap_pg_password, and aap_bundle_path."
+
+- name: Set FQDN hostname and /etc/hosts entry on AAP host
+  ansible.builtin.shell: |
+    hostnamectl set-hostname "{{ aap_fqdn }}"
+    PRIVATE_IP=$(hostname -I | awk '{print $1}')
+    grep -q "{{ aap_fqdn }}" /etc/hosts || echo "${PRIVATE_IP} {{ aap_fqdn }} aap" >> /etc/hosts
+  changed_when: true
+
+- name: Configure swap file on AAP host
+  ansible.builtin.shell: |
+    if [ ! -f /swapfile ]; then
+      dd if=/dev/zero of=/swapfile bs=1M count={{ aap_swap_size_mb }}
+      chmod 600 /swapfile
+      mkswap /swapfile
+    fi
+    swapon --show | grep -q '/swapfile' || swapon /swapfile
+    grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  changed_when: true
+
+- name: Install required base tools for containerized AAP 2.7
+  ansible.builtin.dnf:
+    name:
+      - ansible-core
+      - podman
+      - tar
+    state: present
+
+- name: Ensure AAP bundle extraction directory exists
+  ansible.builtin.file:
+    path: "{{ aap_extract_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Extract AAP 2.7 containerized setup bundle
+  ansible.builtin.unarchive:
+    src: "{{ aap_bundle_path }}"
+    dest: "{{ aap_extract_dir }}"
+    remote_src: true
+
+- name: Find extracted AAP installer directory
+  ansible.builtin.find:
+    paths: "{{ aap_extract_dir }}"
+    file_type: directory
+    recurse: false
+  register: extracted_dirs
+
+- name: Set installer directory fact
+  ansible.builtin.set_fact:
+    aap_installer_dir: "{{ extracted_dirs.files[0].path }}"
+
+- name: Render containerized AAP 2.7 inventory file
+  ansible.builtin.template:
+    src: aap_inventory.j2
+    dest: "{{ aap_installer_dir }}/inventory"
+    mode: "0600"
+
+- name: Run containerized AAP 2.7 installer playbook
+  ansible.builtin.command:
+    cmd: "ansible-playbook -i inventory ansible.containerized_installer.install"
+    chdir: "{{ aap_installer_dir }}"

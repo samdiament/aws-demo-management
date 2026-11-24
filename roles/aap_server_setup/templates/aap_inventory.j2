@@ -1,0 +1,23 @@
+[automationcontroller]
+{{ aap_fqdn }} ansible_connection=local
+
+[automationhub]
+{{ aap_fqdn }} ansible_connection=local
+
+[eda]
+{{ aap_fqdn }} ansible_connection=local
+
+[database]
+{{ aap_fqdn }} ansible_connection=local
+
+[all:vars]
+admin_password={{ aap_admin_password }}
+pg_host={{ aap_fqdn }}
+pg_port=5432
+pg_database=awx
+pg_username=awx
+pg_password={{ aap_pg_password }}
+pg_sslmode=prefer
+{% if aap_enable_eda | bool %}
+eda_enabled=true
+{% endif %}

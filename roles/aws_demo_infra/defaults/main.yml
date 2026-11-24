@@ -1,0 +1,29 @@
+---
+aws_region: "us-east-2"
+vpc_id: ""
+subnet_id: ""
+key_name: ""
+admin_cidr: "0.0.0.0/0"
+vpc_cidr: "10.0.0.0/16"
+
+rhel9_ami_id: ""
+rhel10_ami_id: ""
+
+satellite_fqdn: "satellite.samboxaws.org"
+satellite_instance_type: "m6i.2xlarge"
+satellite_volume_size_gb: 150
+
+target_node_instance_type: "t3.small"
+target_node_swap_size_mb: 2048
+satellite_activation_key_rhel9: "ak-rhel9-dev"
+satellite_activation_key_rhel10: "ak-rhel10-dev"
+
+target_nodes:
+  - name: "rhel9-sat01.samboxaws.org"
+    os_family: "rhel9"
+    ami_id: "{{ rhel9_ami_id }}"
+    activation_key: "{{ satellite_activation_key_rhel9 }}"
+  - name: "rhel10-sat01.samboxaws.org"
+    os_family: "rhel10"
+    ami_id: "{{ rhel10_ami_id }}"
+    activation_key: "{{ satellite_activation_key_rhel10 }}"

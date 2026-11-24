@@ -1,0 +1,130 @@
+---
+- name: Validate required AWS and AMI variables
+  ansible.builtin.assert:
+    that:
+      - vpc_id | length > 0
+      - subnet_id | length > 0
+      - key_name | length > 0
+      - rhel9_ami_id | length > 0
+      - rhel10_ami_id | length > 0
+    fail_msg: "Provide vpc_id, subnet_id, key_name, rhel9_ami_id, and rhel10_ami_id."
+
+- name: Create dedicated Security Group for Satellite 6.19
+  amazon.aws.ec2_security_group:
+    name: "satellite-sg"
+    description: "Security group for Red Hat Satellite 6.19 in demo VPC"
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    rules:
+      - proto: tcp
+        from_port: 22
+        to_port: 22
+        cidr_ip: "{{ admin_cidr }}"
+        rule_desc: "SSH access"
+      - proto: tcp
+        from_port: 80
+        to_port: 80
+        cidr_ip: "0.0.0.0/0"
+        rule_desc: "HTTP for ACME challenge"
+      - proto: tcp
+        from_port: 443
+        to_port: 443
+        cidr_ip: "0.0.0.0/0"
+        rule_desc: "HTTPS Web UI, API, Pulp, and RHSM"
+      - proto: tcp
+        from_port: 9090
+        to_port: 9090
+        cidr_ip: "{{ vpc_cidr }}"
+        rule_desc: "Smart Proxy / Capsule traffic"
+    tags:
+      Name: "satellite-sg"
+      Project: "Lightspeed-AAP-Satellite-Demo"
+  register: sat_sg
+
+- name: Create Security Group for Satellite-managed RHEL target nodes
+  amazon.aws.ec2_security_group:
+    name: "rhel-sat-nodes-sg"
+    description: "Security group for Satellite-registered RHEL target nodes"
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    rules:
+      - proto: tcp
+        from_port: 22
+        to_port: 22
+        cidr_ip: "{{ vpc_cidr }}"
+        rule_desc: "SSH from VPC / AAP"
+    tags:
+      Name: "rhel-sat-nodes-sg"
+      Project: "Lightspeed-AAP-Satellite-Demo"
+  register: nodes_sg
+
+- name: Launch Red Hat Satellite 6.19 EC2 instance
+  amazon.aws.ec2_instance:
+    name: "{{ satellite_fqdn }}"
+    region: "{{ aws_region }}"
+    instance_type: "{{ satellite_instance_type }}"
+    image_id: "{{ rhel9_ami_id }}"
+    key_name: "{{ key_name }}"
+    vpc_subnet_id: "{{ subnet_id }}"
+    security_groups:
+      - "{{ sat_sg.group_id }}"
+    network:
+      assign_public_ip: true
+    volumes:
+      - device_name: /dev/sda1
+        ebs:
+          volume_size: "{{ satellite_volume_size_gb }}"
+          volume_type: gp3
+          delete_on_termination: true
+    tags:
+      Name: "{{ satellite_fqdn }}"
+      Role: "satellite"
+      Project: "Lightspeed-AAP-Satellite-Demo"
+    wait: true
+  register: sat_ec2
+
+- name: Launch Satellite-registered RHEL target node EC2 instances
+  amazon.aws.ec2_instance:
+    name: "{{ item.name }}"
+    region: "{{ aws_region }}"
+    instance_type: "{{ target_node_instance_type }}"
+    image_id: "{{ item.ami_id }}"
+    key_name: "{{ key_name }}"
+    vpc_subnet_id: "{{ subnet_id }}"
+    security_groups:
+      - "{{ nodes_sg.group_id }}"
+    network:
+      assign_public_ip: true
+    tags:
+      Name: "{{ item.name }}"
+      Role: "target-node"
+      ContentSource: "satellite"
+      Project: "Lightspeed-AAP-Satellite-Demo"
+    wait: true
+  loop: "{{ target_nodes }}"
+  register: target_ec2
+
+- name: Add Satellite host to in-memory inventory
+  ansible.builtin.add_host:
+    name: "{{ satellite_fqdn }}"
+    ansible_host: "{{ sat_ec2.instances[0].public_ip_address }}"
+    ansible_user: "ec2-user"
+    groups:
+      - satellite_server
+
+- name: Add target nodes to in-memory inventory
+  ansible.builtin.add_host:
+    name: "{{ item.item.name }}"
+    ansible_host: "{{ item.instances[0].public_ip_address }}"
+    ansible_user: "ec2-user"
+    groups:
+      - satellite_target_nodes
+  loop: "{{ target_ec2.results }}"
+
+- name: Wait for SSH on provisioned hosts
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[item].ansible_host }}"
+    port: 22
+    state: started
+    timeout: 300
+  loop: "{{ groups['satellite_server'] + groups['satellite_target_nodes'] }}"

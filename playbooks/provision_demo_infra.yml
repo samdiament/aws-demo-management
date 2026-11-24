@@ -1,0 +1,43 @@
+---
+- name: Provision AWS Demo Infrastructure
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: aws_demo_infra
+
+- name: Install and Configure Red Hat Satellite 6.19
+  hosts: satellite_server
+  become: true
+  gather_facts: false
+  roles:
+    - role: satellite_server_setup
+
+- name: Install and Configure AAP 2.7
+  hosts: aap_server
+  become: true
+  gather_facts: false
+  roles:
+    - role: aap_server_setup
+
+- name: Prepare Satellite-Managed RHEL Target Nodes
+  hosts: satellite_target_nodes
+  become: true
+  gather_facts: false
+  vars:
+    target_node_swap_size_mb: "{{ hostvars['localhost']['target_node_swap_size_mb'] | default(2048) }}"
+  tasks:
+    - name: Set FQDN hostname on target node
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Configure swap file on target node
+      ansible.builtin.shell: |
+        if [ ! -f /swapfile ]; then
+          dd if=/dev/zero of=/swapfile bs=1M count={{ target_node_swap_size_mb }}
+          chmod 600 /swapfile
+          mkswap /swapfile
+        fi
+        swapon --show | grep -q '/swapfile' || swapon /swapfile
+        grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      changed_when: true

@@ -1,0 +1,113 @@
+---
+- name: Validate Satellite and certificate variables
+  ansible.builtin.assert:
+    that:
+      - satellite_admin_password | length > 0
+      - (not enable_letsencrypt) or (letsencrypt_email | length > 0)
+    fail_msg: "Provide satellite_admin_password and letsencrypt_email (when enable_letsencrypt is true)."
+
+- name: Set FQDN hostname and /etc/hosts entry
+  ansible.builtin.shell: |
+    hostnamectl set-hostname "{{ satellite_fqdn }}"
+    PRIVATE_IP=$(hostname -I | awk '{print $1}')
+    grep -q "{{ satellite_fqdn }}" /etc/hosts || echo "${PRIVATE_IP} {{ satellite_fqdn }} satellite" >> /etc/hosts
+  changed_when: true
+
+- name: Configure swap file on Satellite node
+  ansible.builtin.shell: |
+    if [ ! -f /swapfile ]; then
+      dd if=/dev/zero of=/swapfile bs=1M count={{ satellite_swap_size_mb }}
+      chmod 600 /swapfile
+      mkswap /swapfile
+    fi
+    swapon --show | grep -q '/swapfile' || swapon /swapfile
+    grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  changed_when: true
+
+- name: Enable RHSM repository management and disable RHUI repositories
+  ansible.builtin.shell: |
+    subscription-manager config --rhsm.manage_repos=1
+    dnf config-manager --set-disabled '*rhui*' || true
+    subscription-manager repos --disable "*"
+    subscription-manager repos \
+      --enable=rhel-9-for-x86_64-baseos-rpms \
+      --enable=rhel-9-for-x86_64-appstream-rpms \
+      --enable=satellite-6.19-for-rhel-9-x86_64-rpms \
+      --enable=satellite-maintenance-6.19-for-rhel-9-x86_64-rpms
+  changed_when: true
+
+- name: Install Satellite and tmux packages
+  ansible.builtin.dnf:
+    name:
+      - satellite
+      - tmux
+    state: present
+
+- name: Configure RSA Let's Encrypt certificate and bundle
+  when: enable_letsencrypt | bool
+  block:
+    - name: Stop httpd before standalone ACME challenge
+      ansible.builtin.systemd:
+        name: httpd
+        state: stopped
+      failed_when: false
+
+    - name: Provision or renew RSA certificate in /opt/certbot
+      ansible.builtin.shell: |
+        python3 -m venv /opt/certbot
+        /opt/certbot/bin/pip install --upgrade pip certbot
+        if /opt/certbot/bin/certbot certificates --cert-name "{{ satellite_fqdn }}" 2>/dev/null | grep -q "Certificate Name: {{ satellite_fqdn }}"; then
+          /opt/certbot/bin/certbot renew \
+            --cert-name "{{ satellite_fqdn }}" \
+            --key-type rsa \
+            --rsa-key-size 4096 \
+            --force-renewal
+        else
+          /opt/certbot/bin/certbot certonly --standalone \
+            -d "{{ satellite_fqdn }}" \
+            --key-type rsa \
+            --rsa-key-size 4096 \
+            --agree-tos \
+            -m "{{ letsencrypt_email }}" \
+            --non-interactive
+        fi
+      changed_when: true
+
+    - name: Build full CA bundle including ISRG Root X1
+      ansible.builtin.shell: |
+        cat "/etc/letsencrypt/live/{{ satellite_fqdn }}/chain.pem" \
+          /etc/pki/ca-trust/extracted/pem/directory-hash/*ISRG_Root_X1*.pem \
+          > /root/le-ca-bundle.pem
+      changed_when: true
+
+    - name: Validate certificate bundle with katello-certs-check
+      ansible.builtin.command:
+        cmd: >-
+          katello-certs-check -t satellite
+          -c "/etc/letsencrypt/live/{{ satellite_fqdn }}/cert.pem"
+          -k "/etc/letsencrypt/live/{{ satellite_fqdn }}/privkey.pem"
+          -b /root/le-ca-bundle.pem
+      changed_when: false
+
+- name: Run satellite-installer with Let's Encrypt certificates
+  when: enable_letsencrypt | bool
+  ansible.builtin.command:
+    cmd: >-
+      satellite-installer --scenario satellite
+      --foreman-initial-organization "{{ satellite_org }}"
+      --foreman-initial-location "{{ satellite_location }}"
+      --foreman-initial-admin-username "{{ satellite_admin_user }}"
+      --foreman-initial-admin-password "{{ satellite_admin_password }}"
+      --certs-server-cert "/etc/letsencrypt/live/{{ satellite_fqdn }}/cert.pem"
+      --certs-server-key "/etc/letsencrypt/live/{{ satellite_fqdn }}/privkey.pem"
+      --certs-server-ca-cert /root/le-ca-bundle.pem
+
+- name: Run satellite-installer with default certificates
+  when: not (enable_letsencrypt | bool)
+  ansible.builtin.command:
+    cmd: >-
+      satellite-installer --scenario satellite
+      --foreman-initial-organization "{{ satellite_org }}"
+      --foreman-initial-location "{{ satellite_location }}"
+      --foreman-initial-admin-username "{{ satellite_admin_user }}"
+      --foreman-initial-admin-password "{{ satellite_admin_password }}"

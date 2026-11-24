@@ -1,0 +1,9 @@
+---
+satellite_fqdn: "satellite.samboxaws.org"
+satellite_swap_size_mb: 4096
+satellite_org: "Sambox"
+satellite_location: "AWS"
+satellite_admin_user: "admin"
+satellite_admin_password: ""
+letsencrypt_email: ""
+enable_letsencrypt: true
