@@ -2,9 +2,12 @@
 aws_region: "us-east-2"
 vpc_id: ""
 subnet_id: ""
+vpc_name: "demo-vpc"
+vpc_cidr: "10.0.0.0/16"
+subnet_name: "demo-public-subnet"
+subnet_cidr: "10.0.0.0/24"
 key_name: ""
 admin_cidr: "0.0.0.0/0"
-vpc_cidr: "10.0.0.0/16"
 
 rhel9_ami_id: ""
 rhel10_ami_id: ""

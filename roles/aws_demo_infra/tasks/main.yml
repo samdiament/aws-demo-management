@@ -1,13 +1,72 @@
 ---
-- name: Validate required AWS and AMI variables
+- name: Validate required key and AMI variables
   ansible.builtin.assert:
     that:
-      - vpc_id | length > 0
-      - subnet_id | length > 0
       - key_name | length > 0
       - rhel9_ami_id | length > 0
       - rhel10_ami_id | length > 0
-    fail_msg: "Provide vpc_id, subnet_id, key_name, rhel9_ami_id, and rhel10_ami_id."
+    fail_msg: "Provide key_name, rhel9_ami_id, and rhel10_ami_id."
+
+- name: Create VPC for demo environment when vpc_id is not provided
+  amazon.aws.ec2_vpc_net:
+    name: "{{ vpc_name }}"
+    cidr_block: "{{ vpc_cidr }}"
+    region: "{{ aws_region }}"
+    dns_hostnames: true
+    dns_support: true
+    state: present
+    tags:
+      Name: "{{ vpc_name }}"
+      Project: "Lightspeed-AAP-Satellite-Demo"
+  register: demo_vpc
+  when: vpc_id | length == 0
+
+- name: Set vpc_id fact from created VPC
+  ansible.builtin.set_fact:
+    vpc_id: "{{ demo_vpc.vpc.id }}"
+  when: demo_vpc.vpc is defined
+
+- name: Create Internet Gateway for demo VPC
+  amazon.aws.ec2_vpc_igw:
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    state: present
+    tags:
+      Name: "{{ vpc_name }}-igw"
+      Project: "Lightspeed-AAP-Satellite-Demo"
+  register: demo_igw
+
+- name: Create public subnet in demo VPC when subnet_id is not provided
+  amazon.aws.ec2_vpc_subnet:
+    vpc_id: "{{ vpc_id }}"
+    cidr: "{{ subnet_cidr }}"
+    region: "{{ aws_region }}"
+    map_public: true
+    state: present
+    tags:
+      Name: "{{ subnet_name }}"
+      Project: "Lightspeed-AAP-Satellite-Demo"
+  register: demo_subnet
+  when: subnet_id | length == 0
+
+- name: Set subnet_id fact from created subnet
+  ansible.builtin.set_fact:
+    subnet_id: "{{ demo_subnet.subnet.id }}"
+  when: demo_subnet.subnet is defined
+
+- name: Create and associate public route table with subnet
+  amazon.aws.ec2_vpc_route_table:
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    state: present
+    subnets:
+      - "{{ subnet_id }}"
+    routes:
+      - dest: "0.0.0.0/0"
+        gateway_id: "{{ demo_igw.gateway_id }}"
+    tags:
+      Name: "{{ vpc_name }}-public-rt"
+      Project: "Lightspeed-AAP-Satellite-Demo"
 
 - name: Create dedicated Security Group for Satellite 6.19
   amazon.aws.ec2_security_group:
